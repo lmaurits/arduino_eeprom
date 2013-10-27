@@ -90,17 +90,78 @@ void setup() {
 }
 
 void loop() {
-  // Endlessly write increasing values to address zero, and read them back
+  // Endlessly handle PEEK and POKE commands
+  uint16_t address, max_address;
   uint8_t data;
-  while(1) {  
-    data = readByte(0);
-    Serial.print("I read: ");
-    Serial.println(data,HEX);
-    data++;
-    writeByte(0,data);
-    Serial.print("I just tried to write ");
-    Serial.println(data,HEX);
-    delay(1000);
+  char input[13];
+  char tmp[2];
+  char *command;
+  char *address_str;
+  byte pos = 0;
+  while(1) {
+    // Read from Serial until we hit a newline or 12 characters
+    while(pos <= 12) {
+      while(!Serial.available()) delay(10);
+      input[pos] = Serial.read();
+      if(input[pos] == '\n') break;
+      pos++;
+    }
+    // First word of input is the command
+    command = strtok(input," ");
+    if(!strcmp(command,"PEEK")) {
+      // Handle PEEK
+      address_str = strtok(NULL, "\n");
+      address = strtoul(address_str, NULL, 16);
+      if(address >= 0xFFF) {
+        Serial.println("MAXIMUM ADDRESS IS 0xFFE.");
+      } else {      
+        data = readByte(address);
+        sprintf(tmp, "%02X", data);
+        Serial.println(tmp);
+      }
+    } else if(!strcmp(command,"POKE")) {
+      // Handle POKE
+      address_str = strtok(NULL, " ");
+      address = strtoul(address_str, NULL, 16); 
+      data = (uint8_t) strtoul(strtok(NULL, "\n"), NULL, 16);
+      if(address >= 0xFFF) {
+        Serial.println("MAXIMUM ADDRESS IS 0xFFE.");
+      } else {      
+        writeByte(address,data);
+        data = readByte(address);
+        sprintf(tmp, "%02X", data);
+        Serial.println(tmp);
+      }            
+    } else if(!strcmp(command,"DUMP")) {
+      // Handle DUMP
+      address_str = strtok(NULL, " ");
+      max_address = strtoul(address_str, NULL, 16); 
+      if(max_address >= 0xFFF) {
+        Serial.println("MAXIMUM ADDRESS IS 0xFFE.");
+      } else {
+        for(address=0; address<=max_address; address++) {
+          if(address % 16 == 0) {
+            sprintf(tmp, "%03X", address);
+            Serial.print(tmp);
+            Serial.print("\t");
+          }
+          data = readByte(address);
+          sprintf(tmp, "%02X", data);
+          if(address % 16 == 15) {
+            Serial.println(tmp);
+          } else {
+            Serial.print(tmp);
+            Serial.print(" ");
+          }
+        }
+      }
+    } else {
+      // Handle anything else
+      Serial.println("UNKNOWN COMMAND.  USE PEEK, POKE OR DUMP.");
+    }
+    // Scrub input buffer
+    memset(input, 0, 13);
+    pos = 0;    
   }
 }
 
