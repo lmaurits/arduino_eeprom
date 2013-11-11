@@ -1,35 +1,33 @@
 #include <Wire.h>
 
-// Implementation details:
-// Target EEPROM device is Atmel AT28C64B (and presumably compatible chips).
-// The Arduino accesses the EEPROM's 8 I/O lines using a Microchip MCP2008 I2C port expander
-// The MCP2008's 3 bit address is set to 0
-// The Arduino accesses the EEPROM's 12 address lines using a Microchip MCP2016 I2C port expander
-// the MCP2016's 3 bit address is set to 1
-// The Arduino manipulates the EEPROM's read/write enable pins using two of its digital IO pins
+/********************************************************************************
+ * Arduino-based serial EEPROM programmer
+ * (C) 2013 Luke Maurits <luke@maurits.id.au>, 3-clause BSD license
+ *
+ * Implementation details:
+ * Target EEPROM device is Atmel AT28C64B (and presumably compatible chips).
+ * The Arduino accesses the EEPROM's 8 I/O lines using a Microchip MCP23008 I2C
+ * port expander, whose 3 bit address is set to 000.
+ * The Arduino accesses the EEPROM's 12 address lines using a Microchip MCP23016
+ * I2C port expander, whose 3 bit address is set to 001.
+ * The Arduino manipulates the EEPROM's read/write enable pins using two of its
+ * digital IO pins, as defined by OE_PIN (read) and WE_PIN (write).
+ ********************************************************************************/
+ 
+// Protocol command bytes
+#define READ_BYTE_COMMAND 0x00
+#define READ_BYTES_COMMAND 0xFF
+#define WRITE_BYTE_COMMAND 0x0F
+#define WRITE_BYTES_COMMAND 0xF0
+#define CLEAR_CHIP_COMMAND 0x33
+#define ERROR_INDICATOR 0xCC
 
-#define OE_PIN 2
-#define WE_PIN 3
-
-void setData(uint8_t data) {
-  Wire.beginTransmission(0x20);
-  Wire.write(0x09);
-  Wire.write(data);
-  Wire.endTransmission();
-}
-
-void setAddress(uint16_t address) {  
-  Wire.beginTransmission(0x21);
-  Wire.write(0x00);
-  Wire.write((uint8_t) address & 255 );
-  Wire.endTransmission();      
-  Wire.beginTransmission(0x21);
-  Wire.write(0x01);
-  Wire.write((uint8_t) (address>>8) & 255 );
-  Wire.endTransmission(); 
-}
+// Read/write enable pins
+#define OE_PIN 14
+#define WE_PIN 15
 
 void set8BitBusToOutput() {
+  /* Configure MCP23008 for output */
   Wire.beginTransmission(0x20);
   Wire.write(0x00);
   Wire.write(0x00);
@@ -37,13 +35,35 @@ void set8BitBusToOutput() {
 }
 
 void set8BitBusToInput() {
+  /* Configure MCP23008 for input */
   Wire.beginTransmission(0x20);
   Wire.write(0x00);
   Wire.write(0xFF);
   Wire.endTransmission();  
 }  
 
+void setData(uint8_t data) {
+  /* Put data byte on MCP23008's output pins */
+  Wire.beginTransmission(0x20);
+  Wire.write(0x09);
+  Wire.write(data);
+  Wire.endTransmission();
+}
+
+void setAddress(uint16_t address) {
+  /* Put address on MCP23016's output pins */
+  Wire.beginTransmission(0x21);
+  Wire.write(0x00);
+  Wire.write((uint8_t) (address & 0xFF));
+  Wire.endTransmission();      
+  Wire.beginTransmission(0x21);
+  Wire.write(0x01);
+  Wire.write((uint8_t) (address>>8));
+  Wire.endTransmission(); 
+}
+
 uint8_t readByte(uint16_t address) {
+  /* Read and return byte from specified address */
   uint8_t data;
   set8BitBusToInput();
   setAddress(address);
@@ -58,27 +78,31 @@ uint8_t readByte(uint16_t address) {
 }
 
 void writeByte(uint16_t address, uint8_t data) {
+  /* Write specified data byte to specified address */
   set8BitBusToOutput();
   setAddress(address);
   setData(data);
   digitalWrite(WE_PIN,LOW);
-  delay(10);
   digitalWrite(WE_PIN,HIGH);
-  delay(10);
+  // Wait a bit for the write cycle to complete.
+  // Any lower value than 5 here causes missed writes!
+  delay(5);
 }
 
 void setup() {
+  // Start listening for serial input
   Serial.begin(57600);
   
   // Need two IO pins for output enable (OE) and write enable (WE)
-  pinMode(2,OUTPUT);
-  pinMode(3,OUTPUT);
-  // Pull OE, WE high
+  pinMode(OE_PIN,OUTPUT);
+  pinMode(WE_PIN,OUTPUT);
+  
+  // Pull OE, WE high (disable reading and writing)
   digitalWrite(OE_PIN,HIGH);
   digitalWrite(WE_PIN,HIGH);
-  
-  Wire.begin();  
-  // Set all pins on 16bit bus to output mode
+
+  // Set all pins on MCP23016 output mode (it's only used for addressing)
+  Wire.begin(); 
   Wire.beginTransmission(0x21);
   Wire.write(0x06);
   Wire.write(0x00);
@@ -90,79 +114,119 @@ void setup() {
 }
 
 void loop() {
-  // Endlessly handle PEEK and POKE commands
-  uint16_t address, max_address;
-  uint8_t data;
-  char input[13];
-  char tmp[2];
-  char *command;
-  char *address_str;
-  byte pos = 0;
+  /* Endlessly handle binary protocol commands */
+  
+  uint16_t address;
+  uint8_t a, b;
+  uint8_t buffer[128];
+
   while(1) {
-    // Read from Serial until we hit a newline or 12 characters
-    while(pos <= 12) {
-      while(!Serial.available()) delay(10);
-      input[pos] = Serial.read();
-      if(input[pos] == '\n') break;
-      pos++;
-    }
-    // First word of input is the command
-    command = strtok(input," ");
-    if(!strcmp(command,"PEEK")) {
-      // Handle PEEK
-      address_str = strtok(NULL, "\n");
-      address = strtoul(address_str, NULL, 16);
-      if(address >= 0xFFF) {
-        Serial.println("MAXIMUM ADDRESS IS 0xFFE.");
-      } else {      
-        data = readByte(address);
-        sprintf(tmp, "%02X", data);
-        Serial.println(tmp);
-      }
-    } else if(!strcmp(command,"POKE")) {
-      // Handle POKE
-      address_str = strtok(NULL, " ");
-      address = strtoul(address_str, NULL, 16); 
-      data = (uint8_t) strtoul(strtok(NULL, "\n"), NULL, 16);
-      if(address >= 0xFFF) {
-        Serial.println("MAXIMUM ADDRESS IS 0xFFE.");
-      } else {      
-        writeByte(address,data);
-        data = readByte(address);
-        sprintf(tmp, "%02X", data);
-        Serial.println(tmp);
-      }            
-    } else if(!strcmp(command,"DUMP")) {
-      // Handle DUMP
-      address_str = strtok(NULL, " ");
-      max_address = strtoul(address_str, NULL, 16); 
-      if(max_address >= 0xFFF) {
-        Serial.println("MAXIMUM ADDRESS IS 0xFFE.");
-      } else {
-        for(address=0; address<=max_address; address++) {
-          if(address % 16 == 0) {
-            sprintf(tmp, "%03X", address);
-            Serial.print(tmp);
-            Serial.print("\t");
-          }
-          data = readByte(address);
-          sprintf(tmp, "%02X", data);
-          if(address % 16 == 15) {
-            Serial.println(tmp);
-          } else {
-            Serial.print(tmp);
-            Serial.print(" ");
-          }
+    // Read a command byte
+    while(!Serial.available());
+    a = Serial.read();
+    switch(a) {
+      case READ_BYTE_COMMAND:
+        /* Read a single byte from the chip and send it over the serial channel.
+         * Command format:
+         * READ_BYTE_COMMAND, ADDRESS_LOW_ORDER, ADDRESS_HI_ORDER
+         */         
+        // Read address, low order byte then high order
+        a = Serial.read();
+        b = Serial.read();
+        address = ((uint16_t) b) << 8 | a;
+        // Read data from chip
+        a = readByte(address);
+        // Write data back to serial host
+        Serial.write(a);
+        break;
+      case READ_BYTES_COMMAND:
+        /* Read a variable number of bytes (up to 255) from the chip
+         * and send them over the serial channel.
+         * Command format:
+         * READ_BYTES_COMMAND, START_ADDRESS_LOW_ORDER, START_ADDRESS_HI_ORDER,
+         * BYTE_COUNT
+         */
+        // Read starting address, low order byte then high order
+        a = Serial.read();
+        b = Serial.read();
+        address = ((uint16_t) b) << 8 | a;
+        // Read byte count
+        a = Serial.read();
+        // Read count consecutive bytes       
+        for(; a>0; a--) {
+          b = readByte(address);
+          Serial.write(b);
+          address++;
         }
-      }
-    } else {
-      // Handle anything else
-      Serial.println("UNKNOWN COMMAND.  USE PEEK, POKE OR DUMP.");
+        break;
+      case WRITE_BYTE_COMMAND:
+        /* Read a single byte from the serial channel and store it in the chip
+         * at the specified address.  Read the byte back, and send 0x00 over
+         * the serial channel if it matches what was written, or send
+         * ERROR_INDICATOR if it doesn't match.
+         * Command format:
+         * WRITE_BYTE_COMMAND, ADDRESS_LOW_ORDER, ADDRESS_HI_ORDER, DATA_BYTE
+         */
+        // Read address, low order byte then high order
+        a = Serial.read();
+        b = Serial.read();
+        address = ((uint16_t) b) << 8 | a;
+        // Read data to write
+        a = Serial.read();
+        // Write data to chip
+        writeByte(address,a);
+        // Verify
+        b = readByte(address);
+        if(a == b) {
+          // Send success
+          Serial.write((byte)0x0);
+        } else {
+          Serial.write(ERROR_INDICATOR);
+        }
+        break;
+      case WRITE_BYTES_COMMAND:
+        /* Read a variable (up to 255) number of bytes from the serial channel
+         * and store them in the chip at consecutive addresses beginning at the
+         * specified address.  Currently return 0x00 afterward to indicate
+         * completion without checking anything (obviously subject to change)
+         * Command format:
+         * WRITE_BYTES_COMMAND, START_ADDRESS_LOW_ORDER, START_ADDRESS_HI_ORDER,
+         * BYTE_COUNT, DATA_BYTE_001, DATA_BYTE_002, ... , FINAL_DATA_BYTE 
+         */
+        // Read starting address, low order byte then high order
+        while(!Serial.available());
+        a = Serial.read();
+        while(!Serial.available());
+        b = Serial.read();
+        address = ((uint16_t) b) << 8 | a;
+        // Read byte count
+        while(!Serial.available());
+        a = Serial.read();
+        // Read and write a consecutive bytes
+        for(; a>0; a--) {
+          while(!Serial.available());
+          b = Serial.read();
+          writeByte(address, b);
+          address++;
+        }
+        Serial.write((byte)0x00);
+        break;
+      case CLEAR_CHIP_COMMAND:
+        /* Set all addresses to 0xFF and return 0x00 to indicate completion.
+         * Command format:
+         * CLEAR_CHIP_COMMAND 
+         */
+        for(address=0; address <= 0x1FFF; address++) {
+          writeByte(address, 0xFF);
+        }
+        Serial.write((byte) 0x00);
+        break;
+      default:
+        /* If sent any byte other than one of the specified protocol command bytes,
+         * at a time when a command byte is expected, send the ERROR_INDICATOR byte
+         * over the serial channel.
+         */
+        Serial.write(ERROR_INDICATOR);
     }
-    // Scrub input buffer
-    memset(input, 0, 13);
-    pos = 0;    
   }
 }
-
-
