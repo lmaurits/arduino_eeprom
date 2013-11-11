@@ -122,7 +122,7 @@ void loop() {
 
   while(1) {
     // Read a command byte
-    while(!Serial.available());
+    while(!Serial.available()) delay(7);
     a = Serial.read();
     switch(a) {
       case READ_BYTE_COMMAND:
