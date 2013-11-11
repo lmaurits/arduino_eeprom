@@ -26,6 +26,9 @@
 #define OE_PIN 14
 #define WE_PIN 15
 
+// Our model of the address pins
+uint8_t model_address_low, model_address_high;
+
 void set8BitBusToOutput() {
   /* Configure MCP23008 for output */
   Wire.beginTransmission(0x20);
@@ -52,14 +55,39 @@ void setData(uint8_t data) {
 
 void setAddress(uint16_t address) {
   /* Put address on MCP23016's output pins */
+  uint8_t address_lo, address_hi;
+  address_lo = (uint8_t) (address & 0xFF);
+  address_hi = (uint8_t) (address>>8);
+  if(address_lo != model_address_low) {
+    Wire.beginTransmission(0x21);
+    Wire.write(0x00);
+    Wire.write(address_lo);
+    Wire.endTransmission();      
+    model_address_low = address_lo;
+  }
+  if(address_hi != model_address_high) {
+    Wire.beginTransmission(0x21);
+    Wire.write(0x01);
+    Wire.write(address_hi);
+    Wire.endTransmission();
+    model_address_high = address_hi;
+  }
+}
+
+void setAddressLowOrder(uint8_t address_lo) {
   Wire.beginTransmission(0x21);
   Wire.write(0x00);
-  Wire.write((uint8_t) (address & 0xFF));
-  Wire.endTransmission();      
+  Wire.write(address_lo);
+  Wire.endTransmission();
+  model_address_low = address_lo;
+} 
+
+void setAddressHighOrder(uint8_t address_hi) {
   Wire.beginTransmission(0x21);
   Wire.write(0x01);
-  Wire.write((uint8_t) (address>>8));
-  Wire.endTransmission(); 
+  Wire.write(address_hi);
+  Wire.endTransmission();
+  model_address_high = address_hi;
 }
 
 uint8_t readByte(uint16_t address) {
@@ -111,6 +139,11 @@ void setup() {
   Wire.write(0x07);
   Wire.write(0x00);
   Wire.endTransmission();
+  
+  // Set address to zero and update our model
+  setAddress(0);
+  model_address_low = 0;
+  model_address_high = 0;
 }
 
 void loop() {
