@@ -58,13 +58,21 @@ void setAddress(uint16_t address) {
   uint8_t address_lo, address_hi;
   address_lo = (uint8_t) (address & 0xFF);
   address_hi = (uint8_t) (address>>8);
-  if(address_lo != model_address_low) {
+  setAddressLowOrder(address_lo);
+  setAddressHighOrder(address_hi);
+}
+
+void setAddressLowOrder(uint8_t address_lo) {
+  if(model_address_low != address_lo) {  
     Wire.beginTransmission(0x21);
     Wire.write(0x00);
     Wire.write(address_lo);
-    Wire.endTransmission();      
+    Wire.endTransmission();
     model_address_low = address_lo;
   }
+} 
+
+void setAddressHighOrder(uint8_t address_hi) {
   if(address_hi != model_address_high) {
     Wire.beginTransmission(0x21);
     Wire.write(0x01);
@@ -74,26 +82,27 @@ void setAddress(uint16_t address) {
   }
 }
 
-void setAddressLowOrder(uint8_t address_lo) {
-  Wire.beginTransmission(0x21);
-  Wire.write(0x00);
-  Wire.write(address_lo);
-  Wire.endTransmission();
-  model_address_low = address_lo;
-} 
-
-void setAddressHighOrder(uint8_t address_hi) {
-  Wire.beginTransmission(0x21);
-  Wire.write(0x01);
-  Wire.write(address_hi);
-  Wire.endTransmission();
-  model_address_high = address_hi;
+void incrementAddress() {
+  setAddressLowOrder(model_address_low+1);
+  if(model_address_low == 0) setAddressHighOrder(model_address_high+1);
 }
 
-uint8_t readByte(uint16_t address) {
+uint8_t readByte() {
+  /* Read byte from wherever the address pins currently point */
+  uint8_t data;
+  digitalWrite(OE_PIN, LOW);
+  Wire.beginTransmission(0x20);
+  Wire.write(0x09);
+  Wire.endTransmission();
+  Wire.requestFrom(0x20, 1);
+  data = Wire.read();
+  digitalWrite(OE_PIN, HIGH);
+  return data;
+}
+
+uint8_t readByteFromAddress(uint16_t address) {
   /* Read and return byte from specified address */
   uint8_t data;
-  set8BitBusToInput();
   setAddress(address);
   digitalWrite(OE_PIN, LOW);
   Wire.beginTransmission(0x20);
@@ -105,9 +114,18 @@ uint8_t readByte(uint16_t address) {
   return data;
 }
 
-void writeByte(uint16_t address, uint8_t data) {
+void writeByte(uint8_t data) {
+  /* Write specified data byte to wherever the address pins currently point */
+  setData(data);
+  digitalWrite(WE_PIN,LOW);
+  digitalWrite(WE_PIN,HIGH);
+  // Wait a bit for the write cycle to complete.
+  // Any lower value than 5 here causes missed writes!
+  delay(5);
+}
+
+void writeByteToAddress(uint16_t address, uint8_t data) {
   /* Write specified data byte to specified address */
-  set8BitBusToOutput();
   setAddress(address);
   setData(data);
   digitalWrite(WE_PIN,LOW);
@@ -150,6 +168,7 @@ void loop() {
   /* Endlessly handle binary protocol commands */
   
   uint16_t address;
+  uint8_t address_low, address_high;
   uint8_t a, b;
   uint8_t buffer[128];
 
@@ -168,7 +187,8 @@ void loop() {
         b = Serial.read();
         address = ((uint16_t) b) << 8 | a;
         // Read data from chip
-        a = readByte(address);
+        set8BitBusToInput();
+        a = readByteFromAddress(address);
         // Write data back to serial host
         Serial.write(a);
         break;
@@ -180,16 +200,21 @@ void loop() {
          * BYTE_COUNT
          */
         // Read starting address, low order byte then high order
+        while(!Serial.available());
         a = Serial.read();
+        while(!Serial.available());
         b = Serial.read();
-        address = ((uint16_t) b) << 8 | a;
+        setAddressLowOrder(a);
+        setAddressHighOrder(b);
         // Read byte count
+        while(!Serial.available());
         a = Serial.read();
-        // Read count consecutive bytes       
+        // Read count consecutive bytes
+        set8BitBusToInput();      
         for(; a>0; a--) {
-          b = readByte(address);
+          b = readByte();
           Serial.write(b);
-          address++;
+          incrementAddress();
         }
         break;
       case WRITE_BYTE_COMMAND:
@@ -201,15 +226,20 @@ void loop() {
          * WRITE_BYTE_COMMAND, ADDRESS_LOW_ORDER, ADDRESS_HI_ORDER, DATA_BYTE
          */
         // Read address, low order byte then high order
+        while(!Serial.available());
         a = Serial.read();
+        while(!Serial.available());        
         b = Serial.read();
         address = ((uint16_t) b) << 8 | a;
         // Read data to write
+        while(!Serial.available());
         a = Serial.read();
         // Write data to chip
-        writeByte(address,a);
+        set8BitBusToOutput();
+        writeByteToAddress(address,a);
         // Verify
-        b = readByte(address);
+        set8BitBusToInput();
+        b = readByteFromAddress(address);
         if(a == b) {
           // Send success
           Serial.write((byte)0x0);
@@ -231,16 +261,18 @@ void loop() {
         a = Serial.read();
         while(!Serial.available());
         b = Serial.read();
-        address = ((uint16_t) b) << 8 | a;
+        setAddressLowOrder(a);
+        setAddressHighOrder(b);
         // Read byte count
         while(!Serial.available());
         a = Serial.read();
         // Read and write a consecutive bytes
+        set8BitBusToOutput();
         for(; a>0; a--) {
           while(!Serial.available());
           b = Serial.read();
-          writeByte(address, b);
-          address++;
+          writeByte(b);
+          incrementAddress();
         }
         Serial.write((byte)0x00);
         break;
@@ -249,9 +281,18 @@ void loop() {
          * Command format:
          * CLEAR_CHIP_COMMAND 
          */
-        for(address=0; address <= 0x1FFF; address++) {
-          writeByte(address, 0xFF);
-        }
+        address_low=0;
+        address_high=0;
+        set8BitBusToOutput();
+        do {
+          setAddressHighOrder(address_high);
+          do {
+            setAddressLowOrder(address_low);
+            writeByte(0xFF);
+            address_low++;
+          } while(address_low != 0x00);
+          address_high++;
+        } while(address_high != 0x20);
         Serial.write((byte) 0x00);
         break;
       default:
